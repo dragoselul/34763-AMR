@@ -1,0 +1,14 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Run Project (__main__)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/Project/__main__.py",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": true
+    }
+  ]
+}

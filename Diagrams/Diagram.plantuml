@@ -1,0 +1,119 @@
+@startuml
+
+package "ScenarioData" {
+    class SensorConfigs {
+  +radar: RadarConfig
+  +camera: CameraConfig
+  +ais: AISConfig
+  +gnss: GNSSConfig
+}
+
+class GroundTruths {
+    ground_truths: Dict[int, GroundTruth]
+}
+
+class GroundTruth {
+  +time_stamp: float
+  +p_north: double
+  +p_east: double
+  +v_north: double
+  +v_east: double
+}
+
+class VesselPosition{
+    +time_stamp: float
+    +p_north: double
+    +p_east: double
+}
+
+class VesselPositions{
+    +positions: List[VesselPosition]
+}
+
+class RadarConfig {
+  +pos_ned: float[2]
+  +range_m: float
+  +fov_deg: int
+  +rate_hz: float
+  +sigma_r_m: float
+  +sigma_phi_deg: float
+  +pd: float
+  +lambda_fa: float
+}
+
+class CameraConfig {
+  +pos_ned: float[2]
+  +boresight_deg: float
+  +range_m: float
+  +fov_deg: int
+  +rate_hz: float
+  +sigma_r_m: float
+  +sigma_phi_deg: float
+  +pd: float
+  +lambda_fa: float
+}
+
+class AISConfig {
+  +range_m: float
+  +interval_s: float
+  +sigma_pos_m: float
+  +pd: float
+}
+
+class GNSSConfig {
+  +sigma_pos_m: float
+  +rate_hz: float
+}
+
+enum SensorId {
+  radar
+  camera
+  ais
+  gnss
+}
+
+class SimulationOutput {
++scenario_name     : str
++dt_true           : float                 
++t_end             : float                  
++ground_truth      : Dict[int, np.ndarray]    
++ground_truth_times: np.ndarray               
++measurements      : List[Measurement]        
++vessel_positions  : np.ndarray               
++vessel_times      : np.ndarray              
++sensor_configs    : Dict                     
+}
+
+class Measurement {
+sensor_id     : str
+time          : float
+is_false_alarm: bool
+target_id     : int
+range_m       : Optional[float] = None
+bearing_rad   : Optional[float] = None
+north_m       : Optional[float] = None
+east_m        : Optional[float] = None
+}
+
+class Measurements {
+    +measurements: List[Measurement]
+}
+}
+
+package "ScenarioLoader" {
+    class ScenarioLoader {
+        +ground_truths : GroundTruths
+        +measurements : Measurements
+        +vessel_positions : VesselPositions
+        +camera_config : CameraConfig
+        +radar_config : RadarConfig
+        +ais_config : AISConfig
+        +gnss_config : GNSSConfig
+
+        +load_scenarios(scenario_path: str) : void
+    }
+}
+
+
+
+@enduml
