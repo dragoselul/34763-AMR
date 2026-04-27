@@ -79,7 +79,7 @@ class ScenarioLoader:
             measurements=self.measurements.measurements,
             vessel_positions=vessel_positions_array,
             vessel_times=vessel_times,
-            sensor_configs=data["sensor_configs"],
+            sensor_configs=self.sensor_configs,
         )
 
     def _parse_sensor_configs(self, sensor_configs: Dict[str, Any]) -> SensorConfigs:
