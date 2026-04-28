@@ -15,10 +15,10 @@ class EKFTracker:
         self.x = F @ self.x
         self.P = F @ self.P @ F.T + Q
 
-    def update(self, z, time=None):
-        z_pred = self.frame_manager.compute_measurement("radar", self.x)
-        H = self.frame_manager.compute_jacobian("radar", self.x)
-        R = self.frame_manager.get_noise_covariance("radar")
+    def update(self, sensor_id, z, time=None):
+        z_pred = self.frame_manager.compute_measurement(sensor_id, self.x)
+        H = self.frame_manager.compute_jacobian(sensor_id, self.x)
+        R = self.frame_manager.get_noise_covariance(sensor_id)
 
         y = z - z_pred
         y[1] = np.arctan2(np.sin(y[1]), np.cos(y[1]))  

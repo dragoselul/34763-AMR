@@ -40,7 +40,7 @@ class CVMotionModel:
         return self._Q.copy()
 
 
-output = ScenarioLoader().load_scenarios("harbour_sim_output/scenario_A.json")
+output = ScenarioLoader().load_scenarios("harbour_sim_output/scenario_B.json")
 manager = CoordinateFrameManager.from_simulation_output(output)
 
 target_id = sorted(output.ground_truth)[0]
@@ -57,17 +57,33 @@ radar_measurements = [
     and measurement.target_id == target_id
 ]
 
-radar_dt = radar_measurements[1].time - radar_measurements[0].time
-motion_model = CVMotionModel(dt=radar_dt)
-tracker = EKFTracker(x0, P0, motion_model, manager)
+camera_measurements = [
+    measurement
+    for measurement in output.measurements
+    if measurement.sensor_id == SensorId.camera.value
+    and not measurement.is_false_alarm
+    and measurement.target_id == target_id
+]
+
+measurements = sorted(radar_measurements + camera_measurements, key=lambda m: m.time)
+
+
+initial_time = measurements[0].time
+
+tracker = EKFTracker(x0, P0, CVMotionModel(dt=0.0), manager)
 
 valid_scans = 0
 nis_values = []
+last_time = initial_time
 
-for measurement in radar_measurements:
-    z = np.array([measurement.range_m, measurement.bearing_rad], dtype=float)
+for measurement in measurements:
+    dt = measurement.time - last_time
+    tracker.motion_model = CVMotionModel(dt=dt)
 
     tracker.predict()
+
+    z = np.array([measurement.range_m, measurement.bearing_rad], dtype=float)
+
 
     z_pred = manager.compute_measurement("radar", tracker.x)
     H = manager.compute_jacobian("radar", tracker.x)
@@ -81,6 +97,7 @@ for measurement in radar_measurements:
     nis_values.append(float(nis))
 
     tracker.update("radar", z, time=measurement.time)
+    tracker.update("camera", z, time=measurement.time)
 
     valid_scans += 1
 
