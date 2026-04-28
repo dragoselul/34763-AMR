@@ -17,6 +17,9 @@ class RadarConfig:
     sigma_phi_deg: float
     pd: float
     lambda_fa: float
+    health: SensorHealth = field(
+        default_factory=lambda: SensorHealth(True, SensorErrorCode.ok)
+    )
 
 
 @dataclass
@@ -30,6 +33,9 @@ class CameraConfig:
     sigma_phi_deg: float
     pd: float
     lambda_fa: float
+    health: SensorHealth = field(
+        default_factory=lambda: SensorHealth(True, SensorErrorCode.ok)
+    )
 
 
 @dataclass
@@ -38,12 +44,18 @@ class AISConfig:
     interval_s: float
     sigma_pos_m: float
     pd: float
+    health: SensorHealth = field(
+        default_factory=lambda: SensorHealth(True, SensorErrorCode.ok)
+    )
 
 
 @dataclass
 class GNSSConfig:
     sigma_pos_m: float
     rate_hz: float
+    health: SensorHealth = field(
+        default_factory=lambda: SensorHealth(True, SensorErrorCode.ok)
+    )
 
 
 @dataclass
@@ -59,6 +71,21 @@ class SensorId(str, Enum):
     camera = "camera"
     ais = "ais"
     gnss = "gnss"
+
+
+class SensorErrorCode(str, Enum):
+    ok = "ok"
+    manual_disabled = "manual_disabled"
+    out_of_range = "out_of_range"
+    invalid_geometry = "invalid_geometry"
+    invalid_input = "invalid_input"
+
+
+@dataclass
+class SensorHealth:
+    is_valid: bool
+    code: SensorErrorCode
+    message: str = ""
 
 
 @dataclass
@@ -114,4 +141,4 @@ class SimulationOutput:
     measurements: List[Measurement]
     vessel_positions: np.ndarray
     vessel_times: np.ndarray
-    sensor_configs: Dict[str, Any]
+    sensor_configs: SensorConfigs
