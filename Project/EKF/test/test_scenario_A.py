@@ -1,0 +1,101 @@
+from pathlib import Path
+import sys
+
+repo_root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(repo_root))
+
+
+import numpy as np
+
+from Project.ScenarioLoader import ScenarioLoader
+from Project.CoordinateFrameManager import CoordinateFrameManager
+from Project.EKF.EKFTracker import EKFTracker
+from Project.ScenarioData import SensorId
+
+class CVMotionModel:
+    def __init__(self, dt, sigma_a=0.05):
+        dt2, dt3, dt4 = dt**2, dt**3, dt**4
+
+        self._F = np.array([
+            [1, 0, dt, 0],
+            [0, 1, 0, dt],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1],
+        ], dtype=float)
+
+        q = sigma_a**2
+        self._Q = q * np.array([
+            [dt4 / 4, 0, dt3 / 2, 0],
+            [0, dt4 / 4, 0, dt3 / 2],
+            [dt3 / 2, 0, dt2, 0],
+            [0, dt3 / 2, 0, dt2],
+        ])
+
+    @property
+    def F(self):
+        return self._F.copy()
+
+    @property
+    def Q(self):
+        return self._Q.copy()
+
+
+output = ScenarioLoader().load_scenarios("harbour_sim_output/scenario_A.json")
+manager = CoordinateFrameManager.from_simulation_output(output)
+
+target_id = sorted(output.ground_truth)[0]
+truth = output.ground_truth[target_id]
+
+x0 = truth[0, 1:5].astype(float)
+P0 = np.diag([25**2, 25**2, 10**2, 10**2])
+
+radar_measurements = [
+    measurement
+    for measurement in output.measurements
+    if measurement.sensor_id == SensorId.radar.value
+    and not measurement.is_false_alarm
+    and measurement.target_id == target_id
+]
+
+radar_dt = radar_measurements[1].time - radar_measurements[0].time
+motion_model = CVMotionModel(dt=radar_dt)
+tracker = EKFTracker(x0, P0, motion_model, manager)
+
+valid_scans = 0
+nis_values = []
+
+for measurement in radar_measurements:
+    z = np.array([measurement.range_m, measurement.bearing_rad], dtype=float)
+
+    tracker.predict()
+
+    z_pred = manager.compute_measurement("radar", tracker.x)
+    H = manager.compute_jacobian("radar", tracker.x)
+    R = manager.get_noise_covariance("radar")
+
+    innovation = z - z_pred
+    innovation[1] = np.arctan2(np.sin(innovation[1]), np.cos(innovation[1]))
+
+    S = H @ tracker.P @ H.T + R
+    nis = innovation.T @ np.linalg.inv(S) @ innovation
+    nis_values.append(float(nis))
+
+    tracker.update(z, time=measurement.time)
+
+    valid_scans += 1
+
+print("Scenario:", output.scenario_name)
+print("Target:", target_id)
+print("Valid radar scans:", valid_scans)
+print("Track confirmed within 5 scans:", valid_scans >= 5)
+print("x0=", x0)
+
+rmse = tracker.get_rmse(truth)
+print("RMSE:", round(rmse, 3), "m")
+print("RMSE < 12 m:", rmse < 12)
+
+chi2_95_upper_bound = 5.991
+nis_percent_inside = np.mean(np.array(nis_values) <= chi2_95_upper_bound) * 100
+
+print("NIS inside 95% chi-square bound:", round(nis_percent_inside, 1), "%")
+print("NIS success > 90%:", nis_percent_inside > 90)
