@@ -83,22 +83,18 @@ for measurement in measurements:
     tracker.predict()
 
     z = np.array([measurement.range_m, measurement.bearing_rad], dtype=float)
+    sensor_id = measurement.sensor_id
 
+    nis = tracker.update(
+        z=z,
+        sensor_id=sensor_id,
+        time=measurement.time
+    )
 
-    z_pred = manager.compute_measurement("radar", tracker.x)
-    H = manager.compute_jacobian("radar", tracker.x)
-    R = manager.get_noise_covariance("radar")
+    if nis is not None:
+        nis_values.append(nis)
 
-    innovation = z - z_pred
-    innovation[1] = np.arctan2(np.sin(innovation[1]), np.cos(innovation[1]))
-
-    S = H @ tracker.P @ H.T + R
-    nis = innovation.T @ np.linalg.inv(S) @ innovation
-    nis_values.append(float(nis))
-
-    tracker.update("radar", z, time=measurement.time)
-    tracker.update("camera", z, time=measurement.time)
-
+    last_time = measurement.time
     valid_scans += 1
 
 print("Scenario:", output.scenario_name)
