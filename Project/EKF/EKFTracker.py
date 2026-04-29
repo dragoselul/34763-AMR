@@ -30,6 +30,10 @@ class EKFTracker:
             z_pred = self.frame_manager.compute_measurement(sensor_id, self.x)
             H = self.frame_manager.compute_jacobian(sensor_id, self.x)
             R = self.frame_manager.get_noise_covariance(sensor_id)
+
+            if z_pred is None or H is None:
+                return None
+
             z_list.append(z)
             z_pred_list.append(z_pred)
             H_list.append(H)
@@ -41,16 +45,22 @@ class EKFTracker:
         R = block_diag(*R_list)
 
         y = z - z_pred
+
         for i in range(1, len(y), 2):
-            y[i] = np.arctan2(np.sin(y[i]), np.cos(y[i]))  
+            y[i] = np.arctan2(np.sin(y[i]), np.cos(y[i]))
 
         S = H @ self.P @ H.T + R
         K = self.P @ H.T @ np.linalg.inv(S)
 
+        nis = float(y.T @ np.linalg.inv(S) @ y)
+
         self.x = self.x + K @ y
         self.P = (np.eye(4) - K @ H) @ self.P
+
         self.state_history.append(self.x.copy())
         self.time_history.append(time)
+
+        return nis
 
 
     def update(self, sensor_id, z, time=None):
