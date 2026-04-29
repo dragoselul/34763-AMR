@@ -17,13 +17,16 @@ class EKFTracker:
         self.P = F @ self.P @ F.T + Q
 
     def update_joint(self, sensor_id_list, measurements, time=None):
+        
         z_list = []
         z_pred_list = []
         H_list = []
         R_list = []
 
         for sensor_id, z in zip(sensor_id_list, measurements):
-
+            if sensor_id == "AIS":
+                return self.update_ais(z, time)
+            
             z_pred = self.frame_manager.compute_measurement(sensor_id, self.x)
             H = self.frame_manager.compute_jacobian(sensor_id, self.x)
             R = self.frame_manager.get_noise_covariance(sensor_id)
@@ -51,6 +54,9 @@ class EKFTracker:
 
 
     def update(self, sensor_id, z, time=None):
+        if sensor_id == "AIS":
+            return self.update_ais(z, time)
+        
         z_pred = self.frame_manager.compute_measurement(sensor_id, self.x)
         H = self.frame_manager.compute_jacobian(sensor_id, self.x)
         R = self.frame_manager.get_noise_covariance(sensor_id)
@@ -72,6 +78,32 @@ class EKFTracker:
         self.time_history.append(time)
         return nis
 
+    def update_ais(self, z, time=None):
+        z = np.asarray(z, dtype=float)
+
+        z_pred = self.x[:2]
+
+        H = np.array([
+            [1, 0, 0, 0],
+            [0, 1, 0, 0]
+        ])
+
+        R = self.frame_manager.get_noise_covariance("AIS")
+
+        y = z - z_pred
+
+        S = H @ self.P @ H.T + R
+        K = self.P @ H.T @ np.linalg.inv(S)
+
+        nis = float(y.T @ np.linalg.inv(S) @ y)
+
+        self.x = self.x + K @ y
+        self.P = (np.eye(4) - K @ H) @ self.P
+
+        self.state_history.append(self.x.copy())
+        self.time_history.append(time)
+
+        return nis
 
     def get_rmse(self, ground_truth):
         estimates = np.asarray(self.state_history, dtype=float)
