@@ -17,19 +17,25 @@ class EKFTracker:
         self.P = F @ self.P @ F.T + Q
 
     def update_joint(self, sensor_id_list, measurements, time=None):
-        
+        sensor_keys = [self._normalize_sensor_id(sensor_id) for sensor_id in sensor_id_list]
+
+        if "ais" in sensor_keys:
+            if len(sensor_keys) != 1:
+                raise ValueError(
+                    "AIS measurements must be fused sequentially. "
+                    "Call update(...) for AIS updates instead of update_joint(...)."
+                )
+            return self.update_ais(measurements[0], time)
+
         z_list = []
         z_pred_list = []
         H_list = []
         R_list = []
 
-        for sensor_id, z in zip(sensor_id_list, measurements):
-            if sensor_id == "AIS":
-                return self.update_ais(z, time)
-            
-            z_pred = self.frame_manager.compute_measurement(sensor_id, self.x)
-            H = self.frame_manager.compute_jacobian(sensor_id, self.x)
-            R = self.frame_manager.get_noise_covariance(sensor_id)
+        for sensor_key, z in zip(sensor_keys, measurements):
+            z_pred = self.frame_manager.compute_measurement(sensor_key, self.x)
+            H = self.frame_manager.compute_jacobian(sensor_key, self.x)
+            R = self.frame_manager.get_noise_covariance(sensor_key)
 
             if z_pred is None or H is None:
                 return None
@@ -64,12 +70,14 @@ class EKFTracker:
 
 
     def update(self, sensor_id, z, time=None):
-        if sensor_id == "AIS":
+        sensor_key = self._normalize_sensor_id(sensor_id)
+
+        if sensor_key == "ais":
             return self.update_ais(z, time)
-        
-        z_pred = self.frame_manager.compute_measurement(sensor_id, self.x)
-        H = self.frame_manager.compute_jacobian(sensor_id, self.x)
-        R = self.frame_manager.get_noise_covariance(sensor_id)
+
+        z_pred = self.frame_manager.compute_measurement(sensor_key, self.x)
+        H = self.frame_manager.compute_jacobian(sensor_key, self.x)
+        R = self.frame_manager.get_noise_covariance(sensor_key)
 
         if z_pred is None or H is None or R is None:
             return None
@@ -98,7 +106,7 @@ class EKFTracker:
             [0, 1, 0, 0]
         ])
 
-        R = self.frame_manager.get_noise_covariance("AIS")
+        R = self.frame_manager.get_noise_covariance("ais")
 
         y = z - z_pred
 
@@ -143,5 +151,10 @@ class EKFTracker:
         squared_position_errors = np.sum((estimated_positions - true_positions) ** 2, axis=1)
 
         return float(np.sqrt(np.mean(squared_position_errors)))
+
+    @staticmethod
+    def _normalize_sensor_id(sensor_id):
+        sensor_value = getattr(sensor_id, "value", sensor_id)
+        return str(sensor_value).lower()
     
     

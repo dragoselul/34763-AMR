@@ -1,0 +1,244 @@
+from pathlib import Path
+import copy
+import sys
+
+repo_root = Path(__file__).resolve().parents[3]
+sys.path.insert(0, str(repo_root))
+
+
+import numpy as np
+
+from Project.ScenarioLoader import ScenarioLoader
+from Project.CoordinateFrameManager import CoordinateFrameManager
+from Project.EKF.EKFTracker import EKFTracker
+from Project.ScenarioData import SensorId
+
+
+AIS_DROPOUT_START_S = 60.0
+AIS_DROPOUT_END_S = 90.0
+
+
+class CVMotionModel:
+    def __init__(self, dt, sigma_a=0.05):
+        dt2, dt3, dt4 = dt**2, dt**3, dt**4
+
+        self._F = np.array(
+            [
+                [1, 0, dt, 0],
+                [0, 1, 0, dt],
+                [0, 0, 1, 0],
+                [0, 0, 0, 1],
+            ],
+            dtype=float,
+        )
+
+        q = sigma_a**2
+        self._Q = q * np.array(
+            [
+                [dt4 / 4, 0, dt3 / 2, 0],
+                [0, dt4 / 4, 0, dt3 / 2],
+                [dt3 / 2, 0, dt2, 0],
+                [0, dt3 / 2, 0, dt2],
+            ],
+            dtype=float,
+        )
+
+    @property
+    def F(self):
+        return self._F.copy()
+
+    @property
+    def Q(self):
+        return self._Q.copy()
+
+
+def measurement_sort_key(measurement):
+    priority = 0 if measurement.sensor_id == SensorId.gnss.value else 1
+    return (measurement.time, priority)
+
+
+def rmse_at_times(tracker, truth, times):
+    estimates_by_time = {}
+
+    for time, state in zip(tracker.time_history, tracker.state_history):
+        if time is None:
+            continue
+        estimates_by_time[float(time)] = np.asarray(state[:2], dtype=float)
+
+    squared_errors = []
+    truth_times = truth[:, 0]
+    for time in times:
+        estimate = estimates_by_time.get(float(time))
+        if estimate is None:
+            continue
+        truth_index = int(np.argmin(np.abs(truth_times - time)))
+        truth_position = truth[truth_index, 1:3]
+        squared_errors.append(float(np.sum((estimate - truth_position) ** 2)))
+
+    if not squared_errors:
+        raise ValueError("No aligned estimates were found for the requested times.")
+
+    return float(np.sqrt(np.mean(squared_errors)))
+
+
+output = ScenarioLoader().load_scenarios("harbour_sim_output/scenario_C.json")
+
+target_id = sorted(output.ground_truth)[0]
+truth = output.ground_truth[target_id]
+
+x0 = truth[0, 1:5].astype(float)
+P0 = np.diag([25**2, 25**2, 10**2, 10**2]).astype(float)
+
+target_measurements = [
+    measurement
+    for measurement in output.measurements
+    if not measurement.is_false_alarm
+    and measurement.target_id == target_id
+    and measurement.sensor_id in {
+        SensorId.radar.value,
+        SensorId.camera.value,
+        SensorId.ais.value,
+    }
+]
+
+gnss_measurements = [
+    measurement
+    for measurement in output.measurements
+    if not measurement.is_false_alarm and measurement.sensor_id == SensorId.gnss.value
+]
+
+radar_measurements = [
+    measurement
+    for measurement in target_measurements
+    if measurement.sensor_id == SensorId.radar.value
+]
+camera_measurements = [
+    measurement
+    for measurement in target_measurements
+    if measurement.sensor_id == SensorId.camera.value
+]
+ais_measurements = [
+    measurement
+    for measurement in target_measurements
+    if measurement.sensor_id == SensorId.ais.value
+]
+
+ais_before_dropout = [
+    measurement for measurement in ais_measurements if measurement.time < AIS_DROPOUT_START_S
+]
+ais_during_dropout = [
+    measurement
+    for measurement in ais_measurements
+    if AIS_DROPOUT_START_S <= measurement.time <= AIS_DROPOUT_END_S
+]
+ais_after_dropout = [
+    measurement for measurement in ais_measurements if measurement.time > AIS_DROPOUT_END_S
+]
+dropout_non_ais_updates = [
+    measurement
+    for measurement in target_measurements
+    if measurement.sensor_id != SensorId.ais.value
+    and AIS_DROPOUT_START_S <= measurement.time <= AIS_DROPOUT_END_S
+]
+
+assert output.scenario_name == "C"
+assert np.isclose(output.t_end, 150.0)
+assert radar_measurements, "Scenario C should contain true radar detections for the target."
+assert camera_measurements, "Scenario C should contain true camera detections for the target."
+assert gnss_measurements, "Scenario C should contain GNSS measurements for vessel updates."
+assert ais_measurements, "Scenario C should contain true AIS detections for the target."
+assert len(ais_before_dropout) == 19, "Expected AIS updates every 3 s before the dropout."
+assert not ais_during_dropout, "No true AIS updates should exist inside the 60-90 s dropout."
+assert len(ais_after_dropout) == 19, "Expected AIS updates to resume after the dropout."
+assert np.isclose(ais_after_dropout[0].time, 93.0), "AIS should reacquire at t=93 s."
+assert dropout_non_ais_updates, "The tracker should still receive non-AIS target updates during the dropout."
+
+measurements = sorted(target_measurements + gnss_measurements, key=measurement_sort_key)
+
+
+def run_tracker(include_ais):
+    frame_manager = CoordinateFrameManager(copy.deepcopy(output.sensor_configs))
+    tracker = EKFTracker(x0.copy(), P0.copy(), CVMotionModel(dt=0.0), frame_manager)
+
+    processed_target_measurements = []
+    nis_values = []
+    last_time = 0.0
+
+    for measurement in measurements:
+        if measurement.sensor_id == SensorId.gnss.value:
+            frame_manager.update_vessel_position_from_gnss(measurement)
+            continue
+
+        if measurement.sensor_id == SensorId.ais.value and not include_ais:
+            continue
+
+        dt = measurement.time - last_time
+        tracker.motion_model = CVMotionModel(dt=dt)
+        tracker.predict()
+
+        if measurement.sensor_id == SensorId.ais.value:
+            z = np.array([measurement.north_m, measurement.east_m], dtype=float)
+        else:
+            z = np.array([measurement.range_m, measurement.bearing_rad], dtype=float)
+
+        nis = tracker.update(
+            sensor_id=measurement.sensor_id,
+            z=z,
+            time=measurement.time,
+        )
+
+        if nis is not None:
+            nis_values.append(nis)
+
+        last_time = measurement.time
+        processed_target_measurements.append(measurement)
+
+    return tracker, np.asarray(nis_values, dtype=float), processed_target_measurements
+
+
+tracker_with_ais, nis_with_ais, processed_with_ais = run_tracker(include_ais=True)
+tracker_without_ais, _, processed_without_ais = run_tracker(include_ais=False)
+
+available_ais_times = [
+    measurement.time
+    for measurement in ais_measurements
+    if measurement.time < AIS_DROPOUT_START_S or measurement.time > AIS_DROPOUT_END_S
+]
+
+rmse_with_ais = tracker_with_ais.get_rmse(truth)
+rmse_without_ais = tracker_without_ais.get_rmse(truth)
+available_window_rmse_with_ais = rmse_at_times(tracker_with_ais, truth, available_ais_times)
+available_window_rmse_without_ais = rmse_at_times(tracker_without_ais, truth, available_ais_times)
+
+chi2_95_upper_bound = 5.991
+nis_percent_inside = np.mean(nis_with_ais <= chi2_95_upper_bound) * 100 if len(nis_with_ais) else 0.0
+
+assert len(processed_with_ais) > len(processed_without_ais), "AIS fusion should add target updates."
+assert processed_with_ais[-1].time >= AIS_DROPOUT_END_S, "The target track should survive the AIS dropout."
+
+print("Scenario:", output.scenario_name)
+print("Target:", target_id)
+print("Sensors used:", sorted({measurement.sensor_id for measurement in processed_with_ais}))
+print("Radar hits:", len(radar_measurements))
+print("Camera hits:", len(camera_measurements))
+print("AIS hits:", len(ais_measurements))
+print("AIS before dropout:", len(ais_before_dropout))
+print("AIS during dropout:", len(ais_during_dropout))
+print("AIS after dropout:", len(ais_after_dropout))
+print("Non-AIS target updates during dropout:", len(dropout_non_ais_updates))
+print("Target updates with AIS:", len(processed_with_ais))
+print("Target updates without AIS:", len(processed_without_ais))
+print("x0=", x0)
+print("Overall RMSE with AIS:", round(rmse_with_ais, 3), "m")
+print("Overall RMSE without AIS:", round(rmse_without_ais, 3), "m")
+print(
+    "RMSE at AIS-available times with AIS:",
+    round(available_window_rmse_with_ais, 3),
+    "m",
+)
+print(
+    "RMSE at AIS-available times without AIS:",
+    round(available_window_rmse_without_ais, 3),
+    "m",
+)
+print("NIS inside 95% chi-square bound:", round(nis_percent_inside, 1), "%")
